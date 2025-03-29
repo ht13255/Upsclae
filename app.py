@@ -7,13 +7,15 @@ import concurrent.futures
 import gc
 import streamlit as st
 
-# 최대 워커 수를 64로 고정 (CPU 전용)
-WORKERS = 64
+# 최대 스레드 수를 컴퓨터의 코어 수로 고정
+WORKERS = os.cpu_count() or 64
 
+# 스트림릿 페이지 설정 (최상단에 위치)
+st.set_page_config(page_title="Video Super Resolution (CPU 전용)", layout="centered")
 st.title("비디오 슈퍼 해상도 (CPU 전용)")
-st.write("CPU 전용 모드로 실행합니다. (동시 워커 수: 64)")
+st.write(f"CPU 전용 모드로 실행합니다. (동시 워커 수: {WORKERS})")
 
-# 자동 색 보정 (입력 영상에 대해 자동 보정)
+# --- 자동 색 보정 ---
 def auto_color_correction(frame):
     try:
         lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
@@ -27,7 +29,7 @@ def auto_color_correction(frame):
         st.write("auto_color_correction error:", e)
         return frame
 
-# 비트 플레인 분해 (항상 8비트 고정)
+# --- 비트 플레인 처리 (8비트 고정) ---
 def bit_plane_slicing(channel):
     return [(channel >> i) & 1 for i in range(8)]
 
@@ -36,7 +38,7 @@ def reconstruct_from_bit_planes(bit_planes, weights=None):
         weights = [2**i for i in range(8)]
     return sum((plane.astype(np.uint8) * weights[i]) for i, plane in enumerate(bit_planes))
 
-# 표준 모드 업스케일 함수 (CPU 전용)
+# --- 표준 모드 업스케일 함수 (CPU 전용) ---
 def advanced_upscale_block(block, scale_factor_w, scale_factor_h):
     try:
         channels = cv2.split(block)
@@ -77,7 +79,7 @@ def advanced_upscale_block(block, scale_factor_w, scale_factor_h):
         sharpened = upscaled
     return sharpened
 
-# HDR 모드 업스케일 함수 (CPU 전용)
+# --- HDR 모드 업스케일 함수 (CPU 전용) ---
 def advanced_upscale_block_hdr(block, scale_factor_w, scale_factor_h):
     try:
         block_float = block.astype(np.float32) / 255.0
@@ -105,7 +107,7 @@ def advanced_upscale_block_hdr(block, scale_factor_w, scale_factor_h):
         sharpened = upscaled
     return sharpened
 
-# 프레임 처리 함수 (HDR/표준 모드 분기)
+# --- 프레임 처리 함수 (HDR/표준 모드 분기) ---
 def process_frame(frame, scale_factor_w, scale_factor_h, block_size, hdr_mode=False):
     if hdr_mode:
         frame = auto_color_correction(frame)
@@ -119,7 +121,7 @@ def process_frame(frame, scale_factor_w, scale_factor_h, block_size, hdr_mode=Fa
                     upscaled_block = advanced_upscale_block_hdr(block, scale_factor_w, scale_factor_h)
                 except Exception as e:
                     st.write(f"HDR processing error at block ({i},{j}):", e)
-                    upscaled_block = cv2.resize(block.astype(np.float32)/255.0, 
+                    upscaled_block = cv2.resize(block.astype(np.float32)/255.0,
                                                 (int(block.shape[1]*scale_factor_w), int(block.shape[0]*scale_factor_h)),
                                                 interpolation=cv2.INTER_CUBIC)
                 di, dj = int(i * scale_factor_h), int(j * scale_factor_w)
@@ -131,10 +133,9 @@ def process_frame(frame, scale_factor_w, scale_factor_h, block_size, hdr_mode=Fa
             final_result = np.clip(hdr_result * 255, 0, 255).astype(np.uint8)
         except MemoryError as e:
             st.write("Tonemap processing failed due to memory error:", e)
-            # 톤 매핑을 건너뛰고, 원본 output을 8비트로 변환
             final_result = np.clip(output * 255, 0, 255).astype(np.uint8)
         try:
-            denoised = cv2.fastNlMeansDenoisingColored(final_result, None, h=10, hColor=10, 
+            denoised = cv2.fastNlMeansDenoisingColored(final_result, None, h=10, hColor=10,
                                                         templateWindowSize=7, searchWindowSize=21)
         except cv2.error as e:
             st.write("Denoising failed:", e)
@@ -142,7 +143,6 @@ def process_frame(frame, scale_factor_w, scale_factor_h, block_size, hdr_mode=Fa
         anti_aliased = cv2.GaussianBlur(denoised, (3,3), sigmaX=0.5)
         return anti_aliased
     else:
-        # 표준 모드 처리 (동일)
         h, w = frame.shape[:2]
         out_h, out_w = int(h * scale_factor_h), int(w * scale_factor_w)
         output = np.zeros((out_h, out_w, 3), dtype=np.uint8)
@@ -153,14 +153,14 @@ def process_frame(frame, scale_factor_w, scale_factor_h, block_size, hdr_mode=Fa
                     upscaled_block = advanced_upscale_block(block, scale_factor_w, scale_factor_h)
                 except Exception as e:
                     st.write(f"Standard processing error at block ({i},{j}):", e)
-                    upscaled_block = cv2.resize(block, 
+                    upscaled_block = cv2.resize(block,
                                                 (int(block.shape[1]*scale_factor_w), int(block.shape[0]*scale_factor_h)),
                                                 interpolation=cv2.INTER_CUBIC)
                 di, dj = int(i * scale_factor_h), int(j * scale_factor_w)
                 bh, bw = upscaled_block.shape[:2]
                 output[di:di+bh, dj:dj+bw] = upscaled_block
         try:
-            denoised = cv2.fastNlMeansDenoisingColored(output, None, h=10, hColor=10, 
+            denoised = cv2.fastNlMeansDenoisingColored(output, None, h=10, hColor=10,
                                                         templateWindowSize=7, searchWindowSize=21)
         except cv2.error as e:
             st.write("Denoising failed:", e)
@@ -173,7 +173,7 @@ def process_frame_wrapper(args_tuple):
     processed = process_frame(frame, scale_factor_w, scale_factor_h, block_size, hdr_mode)
     return idx, processed
 
-# 영상 처리 함수 (배치 단위로 처리하여 메모리 사용 최소화)
+# --- 영상 처리 함수 (배치 단위 처리) ---
 def process_video(input_path, output_path, quality, hdr_mode, block_size):
     cap = cv2.VideoCapture(input_path)
     if not cap.isOpened():
@@ -188,14 +188,17 @@ def process_video(input_path, output_path, quality, hdr_mode, block_size):
     scale_factor_w = target_w / orig_w if orig_w > 0 else 1.0
     scale_factor_h = target_h / orig_h if orig_h > 0 else 1.0
 
+    # 배치 처리: 한 번에 100 프레임씩 처리
+    batch_size = 100
+    processed_frames = 0
+    frame_index = 0
+
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     out = cv2.VideoWriter(output_path, fourcc, fps, (target_w, target_h))
 
     progress_bar = st.progress(0)
     progress_text = st.empty()
-    processed_frames = 0
-    batch_size = 100  # 한 번에 처리할 프레임 수
-    frame_index = 0
+
     with concurrent.futures.ThreadPoolExecutor(max_workers=WORKERS) as executor:
         while True:
             batch_frames = []
@@ -210,7 +213,7 @@ def process_video(input_path, output_path, quality, hdr_mode, block_size):
             if not batch_frames:
                 break
             futures = {idx: executor.submit(process_frame, frame, scale_factor_w, scale_factor_h, block_size, hdr_mode)
-                        for idx, frame in zip(batch_indices, batch_frames)}
+                       for idx, frame in zip(batch_indices, batch_frames)}
             for idx in sorted(futures.keys()):
                 result = futures[idx].result()
                 out.write(result)
