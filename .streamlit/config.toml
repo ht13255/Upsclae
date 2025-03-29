@@ -1,0 +1,2 @@
+[server]
+maxUploadSize = 20480  # 단위: MB, 20480 MB = 20GB
